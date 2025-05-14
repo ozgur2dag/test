@@ -1,51 +1,71 @@
 import json
+from typing import List, Tuple, Optional, Dict, Any
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 
-def compare_pr_issues(json_str1, json_str2, threshold=0.85):
-    """
-    Compare 'issue' fields from comments of two AI-generated PR review JSONs.
-    Only compares comments referring to the same file and line.
+# Load model globally to avoid reloading every time
+_model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    Parameters:
-        json_str1 (str): Raw JSON string from LLM 1
-        json_str2 (str): Raw JSON string from LLM 2
-        threshold (float): Cosine similarity threshold for matching issues
 
-    Returns:
-        List[Tuple[int, int, float]]: Tuples of (index_in_json1, index_in_json2, similarity_score)
-    """
+def parse_json_comments(json_str: str) -> List[Dict[str, Any]]:
+    """Parse and extract comments from a JSON string."""
     try:
-        data1 = json.loads(json_str1)
-        data2 = json.loads(json_str2)
+        data = json.loads(json_str)
+        return data.get("comments", [])
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON input: {e}")
 
-    comments1 = data1.get("comments", [])
-    comments2 = data2.get("comments", [])
 
-    # Find comment pairs matching on file and line
-    matched_pairs = [
-        ((i, j), c1["issue"], c2["issue"])
-        for i, c1 in enumerate(comments1)
-        for j, c2 in enumerate(comments2)
-        if c1.get("file") == c2.get("file") and c1.get("line") == c2.get("line")
-    ]
+def find_matching_pairs(comments1: List[Dict[str, Any]], comments2: List[Dict[str, Any]]) -> List[Tuple[int, int, str, str]]:
+    """Find comment pairs with matching file and line numbers."""
+    matches = []
+    for i, c1 in enumerate(comments1):
+        for j, c2 in enumerate(comments2):
+            if c1.get("file") == c2.get("file") and c1.get("line") == c2.get("line"):
+                issue1 = c1.get("issue", "").strip()
+                issue2 = c2.get("issue", "").strip()
+                if issue1 and issue2:
+                    matches.append((i, j, issue1, issue2))
+    return matches
+
+
+def compute_similarity(issue1: str, issue2: str) -> float:
+    """Compute cosine similarity between two issue descriptions."""
+    emb1, emb2 = _model.encode([issue1, issue2])
+    return float(cosine_similarity([emb1], [emb2])[0][0])
+
+
+def compare_pr_issues(json_str1: str, json_str2: str, threshold: float = 0.85, verbose: bool = False) -> List[Tuple[int, int, float]]:
+    """
+    Compare 'issue' fields from two PR review JSON strings.
+
+    Args:
+        json_str1: JSON string from first model.
+        json_str2: JSON string from second model.
+        threshold: Similarity threshold to consider a match.
+        verbose: If True, prints matching issues and their scores.
+
+    Returns:
+        A list of (index_in_json1, index_in_json2, similarity_score) for matched comments.
+    """
+    comments1 = parse_json_comments(json_str1)
+    comments2 = parse_json_comments(json_str2)
+    matched_pairs = find_matching_pairs(comments1, comments2)
 
     if not matched_pairs:
         return []
 
-    model = SentenceTransformer("all-MiniLM-L6-v2")
     results = []
-
-    for (i, j), issue1, issue2 in matched_pairs:
-        emb1, emb2 = model.encode([issue1, issue2])
-        similarity = cosine_similarity([emb1], [emb2])[0][0]
-        if similarity > threshold:
-            results.append((i, j, similarity))
+    for i, j, issue1, issue2 in matched_pairs:
+        score = compute_similarity(issue1, issue2)
+        if verbose:
+            print(f"[{i}, {j}] → Score: {score:.3f} | Issue1: {issue1[:60]} | Issue2: {issue2[:60]}")
+        if score >= threshold:
+            results.append((i, j, score))
 
     return results
 
-# Example use
+
+# Example test usage
 if __name__ == "__main__":
-    print("Comparing PR issues...")
+    print("PR Issue Comparator Ready. Run with test JSON strings.")
